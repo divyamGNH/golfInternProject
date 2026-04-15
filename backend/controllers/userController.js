@@ -75,7 +75,11 @@ export const register = async (req, res) => {
 
     setAuthCookie(res, token);
 
-    console.log("User registered Succesfully");
+    console.log("[auth] user-registered", {
+      userId: newUser._id,
+      email: newUser.email,
+      role: newUser.role,
+    });
     res.status(201).json({
       message: "User registered successfully.",
       user: {

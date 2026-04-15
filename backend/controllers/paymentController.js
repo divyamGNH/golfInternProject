@@ -1,6 +1,11 @@
 import stripe from "../config/stripe.js";
 import { query, withTransaction } from "../db/client.js";
 import { isValidUuid } from "../db/utils.js";
+import {
+  enqueueCheckoutJob,
+  getCheckoutQueueDepth,
+  getCheckoutQueueSnapshot,
+} from "../services/checkoutQueue.js";
 
 const resolveBaseUrl = () =>
   process.env.FRONTEND_URL || "http://localhost:5173";
@@ -249,14 +254,29 @@ export const createCheckoutSession = async (req, res) => {
   }
 
   try {
+    const queueDepth = getCheckoutQueueDepth();
+    console.log("[registration-flow] checkout-request", {
+      userId: req.user?.userId,
+      eventId,
+      ticketTier,
+      queueDepth,
+    });
+
+    if (queueDepth > 200) {
+      return res.status(429).json({
+        error: "Checkout queue is busy. Please retry in a moment.",
+      });
+    }
+
+    const result = await enqueueCheckoutJob(async () => {
     if (!process.env.STRIPE_SECRET_KEY) {
-      return res
-        .status(500)
-        .json({ error: "Missing Stripe secret key configuration." });
+      throw new Error("Missing Stripe secret key configuration.");
     }
 
     if (!req.user?.userId || !req.user?.email) {
-      return res.status(401).json({ error: "User is not authorized." });
+      const authError = new Error("User is not authorized.");
+      authError.statusCode = 401;
+      throw authError;
     }
 
     const eventResult = await query(
@@ -286,11 +306,15 @@ export const createCheckoutSession = async (req, res) => {
 
     const eventItem = eventResult.rows[0];
     if (!eventItem) {
-      return res.status(404).json({ error: "Event not found." });
+      const notFoundError = new Error("Event not found.");
+      notFoundError.statusCode = 404;
+      throw notFoundError;
     }
 
     if (eventItem.seatsBooked >= eventItem.capacity) {
-      return res.status(400).json({ error: "Event is sold out." });
+      const soldOutError = new Error("Event is sold out.");
+      soldOutError.statusCode = 400;
+      throw soldOutError;
     }
 
     const registrationResult = await query(
@@ -310,11 +334,18 @@ export const createCheckoutSession = async (req, res) => {
 
     const registration = registrationResult.rows[0];
 
+    console.log("[registration-flow] registration-upserted", {
+      registrationId: registration?._id,
+      userId: req.user?.userId,
+      eventId,
+      registrationStatus: registration?.status,
+    });
+
     if (registration?.status === "registered") {
-      return res.status(200).json({
+      return {
         alreadyRegistered: true,
         message: "You are already registered for this event.",
-      });
+      };
     }
 
     const paymentRecordResult = await query(
@@ -346,10 +377,10 @@ export const createCheckoutSession = async (req, res) => {
         [registration._id, paymentRecord._id],
       );
 
-      return res.status(200).json({
+      return {
         alreadyRegistered: true,
         message: "Payment already completed for this event.",
-      });
+      };
     }
 
     const targetAmount = Math.round(
@@ -458,7 +489,22 @@ export const createCheckoutSession = async (req, res) => {
       },
     });
 
-    return res.status(200).json({ url: session.url, alreadyRegistered: false });
+    return { url: session.url, alreadyRegistered: false };
+    }, {
+      userId: req.user?.userId,
+      eventId,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    const statusCode = Number(error?.statusCode || 500);
+    return res.status(statusCode).json({ error: error.message });
+  }
+};
+
+export const getCheckoutQueueStatus = async (_req, res) => {
+  try {
+    return res.status(200).json({ queue: getCheckoutQueueSnapshot() });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
