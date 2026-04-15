@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import User from "../models/User.js";
+import { query } from "../db/client.js";
 
 dotenv.config();
 
@@ -39,9 +39,15 @@ export const register = async (req, res) => {
   }
 
   try {
+    const normalizedEmail = String(email).trim().toLowerCase();
+
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
+    const existingUser = await query(
+      `SELECT id FROM users WHERE email = $1 LIMIT 1`,
+      [normalizedEmail],
+    );
+
+    if (existingUser.rowCount > 0) {
       return res
         .status(400)
         .json({ message: "User already registered. Please login instead." });
@@ -50,13 +56,16 @@ export const register = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create new user
-    const newUser = new User({
-      username: String(username).trim(),
-      email: String(email).trim().toLowerCase(),
-      password: hashedPassword,
-      role: "user",
-    });
-    await newUser.save();
+    const insertedUser = await query(
+      `
+        INSERT INTO users (username, email, password_hash, role)
+        VALUES ($1, $2, $3, 'user')
+        RETURNING id AS "_id", username, email, role
+      `,
+      [String(username).trim(), normalizedEmail, hashedPassword],
+    );
+
+    const newUser = insertedUser.rows[0];
 
     const token = jwt.sign(
       { userId: newUser._id, role: newUser.role, email: newUser.email },
@@ -95,17 +104,33 @@ export const login = async (req, res) => {
   }
 
   try {
+    const normalizedEmail = String(email).trim().toLowerCase();
+
     // Find user by email
-    const user = await User.findOne({
-      email: String(email).trim().toLowerCase(),
-    }).select("+password username email role");
-    if (!user) {
+    const userResult = await query(
+      `
+        SELECT
+          id AS "_id",
+          username,
+          email,
+          role,
+          password_hash
+        FROM users
+        WHERE email = $1
+        LIMIT 1
+      `,
+      [normalizedEmail],
+    );
+
+    if (userResult.rowCount === 0) {
       return res
         .status(404)
         .json({ message: "User not found. Please register first." });
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    const user = userResult.rows[0];
+
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
     if (!isPasswordValid) {
       return res.status(401).json({ message: "Incorrect password." });
     }
@@ -183,22 +208,35 @@ export const ensureTestAdmin = async (_req, res) => {
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    let user = await User.findOne({ email }).select(
-      "+password username email role",
+    const userResult = await query(
+      `
+        SELECT id AS "_id", username, email, role
+        FROM users
+        WHERE email = $1
+        LIMIT 1
+      `,
+      [email],
     );
 
-    if (!user) {
-      user = await User.create({
-        username,
-        email,
-        password: hashedPassword,
-        role: "admin",
-      });
+    if (userResult.rowCount === 0) {
+      await query(
+        `
+          INSERT INTO users (username, email, password_hash, role)
+          VALUES ($1, $2, $3, 'admin')
+        `,
+        [username, email, hashedPassword],
+      );
     } else {
-      user.username = username || user.username;
-      user.password = hashedPassword;
-      user.role = "admin";
-      await user.save();
+      await query(
+        `
+          UPDATE users
+          SET username = $1,
+              password_hash = $2,
+              role = 'admin'
+          WHERE email = $3
+        `,
+        [username, hashedPassword, email],
+      );
     }
 
     return res.status(200).json({

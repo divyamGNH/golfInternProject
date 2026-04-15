@@ -9,7 +9,6 @@ import {
 
 import Register from "./components/Register.jsx";
 import Login from "./components/Login.jsx";
-import Home from "./components/Home.jsx";
 import DashboardFrame from "./components/DashboardFrame.jsx";
 import UserEventsPage from "./components/UserEventsPage.jsx";
 import UserRegistrationsPage from "./components/UserRegistrationsPage.jsx";
@@ -47,7 +46,13 @@ function App() {
       <Routes>
         <Route
           path="/"
-          element={<Home user={authUser} setAuthUser={setAuthUser} />}
+          element={
+            isAuthenticated ? (
+              <Navigate to="/dashboard" replace />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
         />
         <Route
           path="/register"
@@ -153,7 +158,16 @@ function App() {
             }
           />
         </Route>
-        <Route path="*" element={<Navigate to="/" />} />
+        <Route
+          path="*"
+          element={
+            isAuthenticated ? (
+              <Navigate to="/dashboard" replace />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
       </Routes>
     </Router>
   );
